@@ -35,6 +35,8 @@
 #include "usb/usb_device.h"
 #include "utils.h"
 
+#include "syslog.h"
+
 typedef enum {
   USB_STATE_INIT = 0,
   USB_STATE_WAIT_FOR_CONFIGURATION,
@@ -48,12 +50,16 @@ typedef struct {
   USBTransportState state;
   bool is_configured;  //!< Keep track of whether the device is configured.
 
-  bool tx_in_progress;  //!< True if there is a TX in progress
+  uint16_t tx_data_pending;
+  bool tx_in_progress;
+  // bool tx_in_progress;  //!< True if there is a TX in progress
   bool rx_in_progress;  //!< True if there is a RX in progress.
   bool dfu_detach;  //!< True if we've received a DFU detach.
 
+  /*
   USB_DEVICE_TRANSFER_HANDLE write_transfer;
   USB_DEVICE_TRANSFER_HANDLE read_transfer;
+  */
 
   /* The transmit endpoint address */
   USB_ENDPOINT_ADDRESS tx_endpoint;
@@ -161,6 +167,26 @@ void USBTransport_EventHandler(USB_DEVICE_EVENT event, void* event_data,
          * we send this information to the host. */
         USB_DEVICE_ControlSend(g_usb_transport_data.usb_device,
                                &g_usb_transport_data.altSetting, 1);
+      } else if (setup_packet->bRequest == 0x20) {
+        // in
+        g_usb_transport_data.rx_data_size = setup_packet->wLength;
+        g_usb_transport_data.rx_in_progress = true;
+        USB_DEVICE_ControlReceive(g_usb_transport_data.usb_device,
+                                  receivedDataBuffer,
+                                  setup_packet->wLength);
+      } else if (setup_packet->bRequest == 0x21) {
+        g_usb_transport_data.tx_in_progress = true;
+        
+        /*
+        if (g_usb_transport_data.tx_data_pending) {
+          USB_DEVICE_ControlSend(g_usb_transport_data.usb_device,
+                                 transmitDataBuffer,
+                                 g_usb_transport_data.tx_data_pending);
+        } else {
+            USB_DEVICE_ControlStatus(g_usb_transport_data.usb_device,
+                                     USB_DEVICE_CONTROL_STATUS_ERROR);
+        }
+        */
       } else {
         // Unknown request.
         USB_DEVICE_ControlStatus(g_usb_transport_data.usb_device,
@@ -170,15 +196,29 @@ void USBTransport_EventHandler(USB_DEVICE_EVENT event, void* event_data,
 
     case USB_DEVICE_EVENT_ENDPOINT_READ_COMPLETE:
       // Endpoint read is complete
+      /*
       g_usb_transport_data.rx_in_progress = false;
       g_usb_transport_data.rx_data_size =
           ((USB_DEVICE_EVENT_DATA_ENDPOINT_WRITE_COMPLETE*) event_data)->length;
+      */
       break;
 
     case USB_DEVICE_EVENT_ENDPOINT_WRITE_COMPLETE:
       // Endpoint write is complete
-      g_usb_transport_data.tx_in_progress = false;
+      // g_usb_transport_data.tx_in_progress = false;
       break;
+    case USB_DEVICE_EVENT_CONTROL_TRANSFER_DATA_RECEIVED:
+      BSP_LEDToggle(BSP_LED_2);;
+      USB_DEVICE_ControlStatus(g_usb_transport_data.usb_device,
+                               USB_DEVICE_CONTROL_STATUS_OK);
+      g_usb_transport_data.rx_in_progress = false;
+      break;
+    case USB_DEVICE_EVENT_CONTROL_TRANSFER_DATA_SENT:
+      g_usb_transport_data.tx_data_pending = 0u;
+      break;
+
+    case USB_DEVICE_EVENT_CONTROL_TRANSFER_ABORTED:
+      g_usb_transport_data.tx_in_progress = false;
 
     case USB_DEVICE_EVENT_RESUMED:
     case USB_DEVICE_EVENT_ERROR:
@@ -197,6 +237,8 @@ void USBTransport_Initialize(TransportRxFunction rx_cb) {
   g_usb_transport_data.tx_endpoint = 0x81;
   g_usb_transport_data.rx_in_progress = false;
   g_usb_transport_data.tx_in_progress = false;
+  // g_usb_transport_data.tx_in_progress = false;
+  g_usb_transport_data.tx_data_pending = 0u;
   g_usb_transport_data.dfu_detach = false;
   g_usb_transport_data.altSetting = 0;
   g_usb_transport_data.rx_data_size = 0;
@@ -248,6 +290,7 @@ void USBTransport_Tasks() {
         }
 
         // Indicate that we are waiting for read
+        /*
         g_usb_transport_data.rx_in_progress = true;
 
         // Place a new read request.
@@ -259,6 +302,7 @@ void USBTransport_Tasks() {
             sizeof(receivedDataBuffer));
 
         (void) result;
+        */
 
         // Device is ready to run the main task
         g_usb_transport_data.state = USB_STATE_MAIN_TASK;
@@ -282,9 +326,36 @@ void USBTransport_Tasks() {
         USB_DEVICE_EndpointDisable(g_usb_transport_data.usb_device,
                                    g_usb_transport_data.tx_endpoint);
         g_usb_transport_data.rx_in_progress = false;
-        g_usb_transport_data.tx_in_progress = false;
+        // g_usb_transport_data.tx_in_progress = false;
       } else if (g_usb_transport_data.rx_in_progress == false) {
+
+        if (g_usb_transport_data.rx_in_progress == false &&
+            g_usb_transport_data.rx_data_size) {
+          SysLog_Print(SYSLOG_INFO, "rx %d, last: %d",
+                       g_usb_transport_data.rx_data_size,
+                       receivedDataBuffer[g_usb_transport_data.rx_data_size - 1]);
+#ifdef PIPELINE_TRANSPORT_RX
+          PIPELINE_TRANSPORT_RX(receivedDataBuffer,
+                                g_usb_transport_data.rx_data_size);
+#else
+          g_usb_transport_data.rx_cb(receivedDataBuffer,
+                                     g_usb_transport_data.rx_data_size);
+#endif
+          g_usb_transport_data.rx_data_size = 0;
+        }
+
+        if (g_usb_transport_data.tx_in_progress &&
+            g_usb_transport_data.tx_data_pending) {
+          SysLog_Print(SYSLOG_INFO, "sending %d",
+                       g_usb_transport_data.tx_data_pending);
+          USB_DEVICE_ControlSend(g_usb_transport_data.usb_device,
+                                 transmitDataBuffer,
+                                 g_usb_transport_data.tx_data_pending);
+          g_usb_transport_data.tx_in_progress = false;
+        }
+
         // We have received data.
+        /*
         if (g_usb_transport_data.tx_in_progress == false) {
           // we only go ahead and process the data if we can respond.
 #ifdef PIPELINE_TRANSPORT_RX
@@ -304,6 +375,7 @@ void USBTransport_Tasks() {
                                   &receivedDataBuffer[0],
                                   sizeof (receivedDataBuffer));
         }
+        */
       }
       break;
 
@@ -316,9 +388,18 @@ void USBTransport_Tasks() {
 
 bool USBTransport_SendResponse(uint8_t token, Command command, uint8_t rc,
                                const IOVec* data, unsigned int iov_count) {
+  BSP_LEDToggle(BSP_LED_3);
+  /*
   if (g_usb_transport_data.tx_in_progress ||
       !g_usb_transport_data.is_configured) {
     return false;
+  }
+  */
+  SysLog_Print(SYSLOG_INFO, "send res");
+
+  if (g_usb_transport_data.tx_data_pending) {
+    SysLog_Print(SYSLOG_INFO, "already pending %d",
+                 g_usb_transport_data.tx_data_pending);
   }
 
   transmitDataBuffer[0] = START_OF_MESSAGE_ID;
@@ -353,8 +434,11 @@ bool USBTransport_SendResponse(uint8_t token, Command command, uint8_t rc,
   transmitDataBuffer[5] = ShortMSB(offset);
   transmitDataBuffer[8 + offset] = END_OF_MESSAGE_ID;
 
-  g_usb_transport_data.tx_in_progress = true;
+  g_usb_transport_data.tx_data_pending = offset + 9u;
+  SysLog_Print(SYSLOG_INFO, "tx pending %d",
+               g_usb_transport_data.tx_data_pending);
 
+  /*
   USB_DEVICE_RESULT result = USB_DEVICE_EndpointWrite(
       g_usb_transport_data.usb_device,
       &g_usb_transport_data.write_transfer,
@@ -364,11 +448,14 @@ bool USBTransport_SendResponse(uint8_t token, Command command, uint8_t rc,
   if (result != USB_DEVICE_RESULT_OK) {
     g_usb_transport_data.tx_in_progress = false;
   }
-  return result == USB_DEVICE_RESULT_OK;
+  */
+  //return result == USB_DEVICE_RESULT_OK;
+  return true;
 }
 
 bool USBTransport_WritePending() {
-  return g_usb_transport_data.tx_in_progress;
+  return g_usb_transport_data.tx_data_pending;
+  // return g_usb_transport_data.tx_in_progress;
 }
 
 USB_DEVICE_HANDLE USBTransport_GetHandle() {
@@ -381,10 +468,12 @@ bool USBTransport_IsConfigured() {
 
 
 void USBTransport_SoftReset() {
+  /*
   if (g_usb_transport_data.tx_in_progress) {
     USB_DEVICE_EndpointTransferCancel(
         g_usb_transport_data.usb_device,
         g_usb_transport_data.tx_endpoint,
         g_usb_transport_data.write_transfer);
   }
+  */
 }
