@@ -23,6 +23,7 @@
 
 #include "coarse_timer.h"
 #include "dimmer_model.h"
+#include "flash.h"
 #include "led_model.h"
 #include "message_handler.h"
 #include "moving_light.h"
@@ -34,6 +35,7 @@
 #include "receiver_counters.h"
 #include "sensor_model.h"
 #include "setting_macros.h"
+#include "spi.h"
 #include "spi_rgb.h"
 #include "stream_decoder.h"
 #include "syslog.h"
@@ -41,9 +43,9 @@
 #include "temperature.h"
 #include "transceiver.h"
 #include "uid_store.h"
+#include "uid_store.h"
 #include "usb_descriptors.h"
 #include "usb_transport.h"
-#include "uid_store.h"
 
 #include "app_settings.h"
 
@@ -75,6 +77,19 @@ void APP_Initialize(void) {
   SysLog_Initialize(NULL);
 
   Temperature_Init();
+
+  // Initialize flash
+  SPI_Initialize();
+
+  FlashHardwareSettings flash_settings = {
+    .ce_port = PORT_CHANNEL_G,
+    .ce_bit = PORTS_BIT_POS_9,
+    .hold_port = PORT_CHANNEL_E,
+    .hold_bit = PORTS_BIT_POS_6,
+    .wp_port = PORT_CHANNEL_E,
+    .wp_bit = PORTS_BIT_POS_5,
+  };
+  Flash_Initialize(&flash_settings);
 
   // Initialize the DMX / RDM Transceiver
   TransceiverHardwareSettings transceiver_settings = {
@@ -156,6 +171,7 @@ void APP_Tasks(void) {
   USBTransport_Tasks();
   Transceiver_Tasks();
   USBConsole_Tasks();
+  SPI_Tasks();
 
   if (Transceiver_GetMode() == T_MODE_RESPONDER) {
     RDMResponder_Tasks();
