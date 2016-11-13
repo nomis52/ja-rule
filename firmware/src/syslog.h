@@ -32,6 +32,9 @@
  * The low level implementation is determined by the callback function passed
  * to SysLog_Initialize (or via PIPELINE_LOG_WRITE).
  *
+ * To log messages to the console, use SysLog_Message() and SysLog_Print().
+ * This should not be called within interrupt context.
+ *
  * @addtogroup logging
  * @{
  * @file syslog.h
@@ -80,6 +83,7 @@ void SysLog_Initialize(SysLogWriteFn write_fn);
  * @brief Log a message.
  * @param level the log level of the message
  * @param msg the message to log.
+ * @note This should not be called within interrupt context.
  */
 void SysLog_Message(SysLogLevel level, const char* msg);
 
@@ -87,6 +91,7 @@ void SysLog_Message(SysLogLevel level, const char* msg);
  * @brief Format and log a message.
  * @param level the log level of the message
  * @param format The format string.
+ * @note This should not be called within interrupt context.
  */
 void SysLog_Print(SysLogLevel level, const char* format, ...);
 
